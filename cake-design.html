@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bolo Branco Personalizável com Impressão de Canvas (Corrigido)</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: 'Inter', sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: flex-start; /* Alinha ao topo para dar espaço aos controles */
+            min-height: 100vh;
+            background-color: #f0f0f0;
+        }
+        #canvas-container {
+            width: 100%;
+            flex-grow: 1; /* Permite que o container preencha o espaço restante */
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            overflow: hidden;
+            position: relative; /* Para posicionar os canvas internos */
+        }
+        canvas {
+            display: block;
+            position: absolute; /* Permite sobrepor os canvas */
+            top: 0;
+            left: 0;
+            width: 100% !important;
+            height: 100% !important;
+        }
+        #controls {
+            width: 100%;
+            background-color: #fff;
+            padding: 1rem;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1); /* Sombra para baixo */
+            z-index: 10;
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+            max-height: 250px; /* Limita a altura dos controles em mobile */
+            overflow-y: auto; /* Adiciona scroll se os controles forem muitos */
+        }
+        @media (min-width: 768px) {
+            body {
+                flex-direction: row;
+                justify-content: flex-start;
+                align-items: flex-start;
+            }
+            #controls {
+                width: 300px;
+                max-height: 100vh;
+                overflow-y: auto;
+                box-shadow: 2px 0 10px rgba(0,0,0,0.1); /* Sombra para a direita */
+                padding: 1.5rem;
+            }
+            #canvas-container {
+                flex-grow: 1;
+                height: 100vh;
+            }
+        }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-800">
+    <div id="controls" class="p-4 bg-white rounded-lg shadow-lg m-4 md:m-0 md:rounded-none">
+        <h2 class="text-xl font-bold mb-4 text-center text-blue-700">Configurações do Bolo</h2>
+
+        <div class="mb-4">
+            <label for="numTiers" class="block text-sm font-medium text-gray-700 mb-1">Número de Andares:</label>
+            <input type="number" id="numTiers" value="3" min="1" class="w-full p-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500">
+            <button id="updateTiersBtn" class="mt-2 w-full bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700 transition duration-300 ease-in-out shadow-md">
+                Atualizar Andares
+            </button>
+        </div>
+
+        <div id="tierDimensions" class="space-y-4">
+            <!-- Campos de dimensão dos andares serão gerados aqui -->
+        </div>
+
+        <button id="renderCakeBtn" class="w-full bg-green-600 text-white py-3 px-4 rounded-md hover:bg-green-700 transition duration-300 ease-in-out shadow-lg text-lg font-semibold">
+            Renderizar Bolo
+        </button>
+
+        <button id="toggleViewBtn" class="w-full bg-purple-600 text-white py-3 px-4 rounded-md hover:bg-purple-700 transition duration-300 ease-in-out shadow-lg text-lg font-semibold mt-4">
+            Alternar Visualização (2D/3D)
+        </button>
+
+        <button id="printCanvasBtn" class="w-full bg-gray-600 text-white py-3 px-4 rounded-md hover:bg-gray-700 transition duration-300 ease-in-out shadow-lg text-lg font-semibold mt-4">
+            Imprimir Visualização Atual
+        </button>
+    </div>
+
+    <div id="canvas-container">
+        <canvas id="cake3DCanvas"></canvas>
+        <canvas id="cake2DCanvas" style="display: none;"></canvas>
+    </div>
+
+    <script>
+        let scene, camera, renderer, controls;
+        let cakeGroup; // Grupo para conter todos os andares do bolo
+        let canvas3D, canvas2D, ctx2D;
+        let is2DView = false;
+
+        const canvasContainer = document.getElementById('canvas-container');
+        const defaultTierData = [
+            { diameter: 40, height: 20 },
+            { diameter: 30, height: 20 },
+            { diameter: 20, height: 20 }
+        ];
+        let currentTierData = [...defaultTierData]; // Use uma cópia para poder modificar
+        let sortedTiersForRender = []; // Para armazenar os andares ordenados para renderização 2D/3D
+
+        window.onload = function() {
+            initThreeJS();
+            init2DCanvas();
+            createTierInputs(defaultTierData.length); // Cria os inputs iniciais para 3 andares
+            renderCake(); // Renderiza o bolo inicial (3D por padrão)
+            addEventListeners();
+        };
+
+        function initThreeJS() {
+            canvas3D = document.getElementById('cake3DCanvas');
+
+            // Scene
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0xf0f0f0); // Soft background color
+
+            // Camera
+            camera = new THREE.PerspectiveCamera(75, canvasContainer.clientWidth / canvasContainer.clientHeight, 0.1, 1000);
+            camera.position.set(0, 70, 100); // Camera position to view the cake from above
+
+            // Renderer
+            renderer = new THREE.WebGLRenderer({ canvas: canvas3D, antialias: true });
+            renderer.setSize(canvasContainer.clientWidth, canvasContainer.clientHeight);
+            // canvasContainer.appendChild(renderer.domElement); // Already in HTML
+
+            // Orbit Controls (to rotate and zoom)
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true; // Enable "damping" for smoother movement
+            controls.dampingFactor = 0.25;
+            controls.screenSpacePanning = false;
+            controls.maxPolarAngle = Math.PI / 2; // Prevent camera from going below the ground
+
+            // Group for the cake
+            cakeGroup = new THREE.Group();
+            scene.add(cakeGroup);
+
+            // Lights
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.7); // Soft ambient light
+            scene.add(ambientLight);
+
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.5); // Directional light for shadows
+            directionalLight.position.set(50, 100, 50);
+            directionalLight.castShadow = true;
+            scene.add(directionalLight);
+
+            // Window resize handler
+            window.addEventListener('resize', onWindowResize, false);
+
+            animate(); // Start animation loop
+        }
+
+        function init2DCanvas() {
+            canvas2D = document.getElementById('cake2DCanvas');
+            ctx2D = canvas2D.getContext('2d');
+            canvas2D.width = canvasContainer.clientWidth;
+            canvas2D.height = canvasContainer.clientHeight;
+        }
+
+        function addEventListeners() {
+            document.getElementById('updateTiersBtn').addEventListener('click', () => {
+                const numTiers = parseInt(document.getElementById('numTiers').value);
+                if (isNaN(numTiers) || numTiers < 1) {
+                    console.error('Por favor, insira um número válido de andares (mínimo 1).');
+                    return;
+                }
+                createTierInputs(numTiers);
+            });
+
+            document.getElementById('renderCakeBtn').addEventListener('click', renderCake);
+            document.getElementById('toggleViewBtn').addEventListener('click', toggleView);
+            document.getElementById('printCanvasBtn').addEventListener('click', printCanvas); // New print button listener
+        }
+
+        function createTierInputs(numTiers) {
+            const tierDimensionsDiv = document.getElementById('tierDimensions');
+            tierDimensionsDiv.innerHTML = ''; // Clear existing fields
+
+            const newTierData = [];
+            for (let i = 0; i < numTiers; i++) {
+                if (currentTierData[i]) {
+                    newTierData.push({ ...currentTierData[i] });
+                } else {
+                    newTierData.push({ diameter: 20 + (numTiers - 1 - i) * 10, height: 20 });
+                }
+            }
+            currentTierData = newTierData;
+
+            currentTierData.forEach((data, index) => {
+                const tierDiv = document.createElement('div');
+                tierDiv.className = 'p-3 border border-gray-200 rounded-md bg-gray-50';
+                tierDiv.innerHTML = `
+                    <h3 class="text-md font-semibold mb-2 text-gray-800">Andar ${index + 1}</h3>
+                    <div class="flex flex-col sm:flex-row gap-2">
+                        <div class="flex-1">
+                            <label for="diameter${index}" class="block text-xs font-medium text-gray-600 mb-1">Diâmetro (cm):</label>
+                            <input type="number" id="diameter${index}" value="${data.diameter}" min="1" class="w-full p-2 text-sm border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500">
+                        </div>
+                        <div class="flex-1">
+                            <label for="height${index}" class="block text-xs font-medium text-gray-600 mb-1">Altura (cm):</label>
+                            <input type="number" id="height${index}" value="${data.height}" min="1" class="w-full p-2 text-sm border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500">
+                        </div>
+                    </div>
+                `;
+                tierDimensionsDiv.appendChild(tierDiv);
+            });
+        }
+
+        function renderCake() {
+            const tiersData = [];
+            let maxDiameter = 0;
+            let totalCakeHeight = 0;
+
+            for (let i = 0; i < currentTierData.length; i++) {
+                const diameterInput = document.getElementById(`diameter${i}`);
+                const heightInput = document.getElementById(`height${i}`);
+
+                let diameter = parseFloat(diameterInput ? diameterInput.value : currentTierData[i].diameter);
+                let height = parseFloat(heightInput ? heightInput.value : currentTierData[i].height);
+
+                if (isNaN(diameter) || diameter <= 0) diameter = 20;
+                if (isNaN(height) || height <= 0) height = 20;
+
+                tiersData.push({ diameter, height });
+
+                if (diameter > maxDiameter) maxDiameter = diameter;
+                totalCakeHeight += height;
+            }
+
+            sortedTiersForRender = tiersData.sort((a, b) => b.diameter - a.diameter);
+
+            if (is2DView) {
+                draw2DCake(sortedTiersForRender, maxDiameter, totalCakeHeight);
+            } else {
+                draw3DCake(sortedTiersForRender, maxDiameter, totalCakeHeight);
+            }
+        }
+
+        function draw3DCake(tiersToRender, maxDiameter, totalCakeHeight) {
+            canvas3D.style.display = 'block';
+            canvas2D.style.display = 'none';
+            controls.enabled = true;
+
+            while (cakeGroup.children.length > 0) {
+                const object = cakeGroup.children[0];
+                object.geometry.dispose();
+                object.material.dispose();
+                cakeGroup.remove(object);
+            }
+
+            const cakeMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.7, metalness: 0.1 });
+            let currentHeightOffset = 0;
+
+            tiersToRender.forEach(data => {
+                const radius = data.diameter / 2;
+                const geometry = new THREE.CylinderGeometry(radius, radius, data.height, 32);
+                const tier = new THREE.Mesh(geometry, cakeMaterial);
+                tier.position.y = currentHeightOffset + (data.height / 2);
+                cakeGroup.add(tier);
+                currentHeightOffset += data.height;
+            });
+
+            cakeGroup.position.y = -(totalCakeHeight / 2);
+
+            const boundingBox = new THREE.Box3().setFromObject(cakeGroup);
+            const center = new THREE.Vector3();
+            boundingBox.getCenter(center);
+            const size = new THREE.Vector3();
+            boundingBox.getSize(size);
+
+            const maxDim = Math.max(size.x, size.y, size.z);
+            const fov = camera.fov * (Math.PI / 180);
+            let cameraZ = Math.abs(maxDim / 2 / Math.tan(fov / 2));
+
+            cameraZ *= 1.5;
+
+            camera.position.set(center.x, center.y + size.y / 2 + cameraZ * 0.5, cameraZ);
+            camera.lookAt(center);
+            controls.target.copy(center);
+            controls.update();
+        }
+
+        function draw2DCake(tiersToRender, maxDiameter, totalCakeHeight) {
+            canvas3D.style.display = 'none';
+            canvas2D.style.display = 'block';
+            controls.enabled = false;
+
+            ctx2D.clearRect(0, 0, canvas2D.width, canvas2D.height);
+
+            const padding = 80; // Padding from the canvas edges
+            const ellipseVerticalRatio = 1 / 5; // Height of ellipse is 1/5 of diameter
+
+            // Calculate the total visual height of the cake, including ellipses at top and bottom
+            const totalEllipseHeightForVisual = (maxDiameter * ellipseVerticalRatio); // Height of one full ellipse
+            const effectiveTotalCakeHeightForScaling = totalCakeHeight + totalEllipseHeightForVisual;
+
+            const availableWidth = canvas2D.width - 2 * padding;
+            const availableHeight = canvas2D.height - 2 * padding;
+
+            const scaleFactorWidth = availableWidth / maxDiameter;
+            const scaleFactorHeight = availableHeight / effectiveTotalCakeHeightForScaling;
+            const scaleFactor = Math.min(scaleFactorWidth, scaleFactorHeight);
+
+            // Calculate the actual scaled total height for centering
+            const scaledTotalCakeHeight = totalCakeHeight * scaleFactor;
+            const scaledTotalEllipseHeightVisual = totalEllipseHeightForVisual * scaleFactor;
+
+            // Initial Y position for the bottom of the lowest tier's bottom ellipse
+            let currentTierBottomY = canvas2D.height - padding - (availableHeight - (scaledTotalCakeHeight + scaledTotalEllipseHeightVisual)) / 2;
+
+            // Adjust currentTierBottomY to be the actual bottom edge of the lowest ellipse
+            const maxEllipseScaledRadiusY = (maxDiameter * ellipseVerticalRatio * scaleFactor) / 2;
+            currentTierBottomY -= maxEllipseScaledRadiusY;
+
+
+            // Draw tiers from bottom up (largest diameter to smallest)
+            for (let i = 0; i < tiersToRender.length; i++) {
+                const tier = tiersToRender[i];
+                const tierScaledWidth = tier.diameter * scaleFactor;
+                const tierScaledHeight = tier.height * scaleFactor;
+                const ellipseScaledRadiusX = tierScaledWidth / 2;
+                const ellipseScaledRadiusY = (tier.diameter * ellipseVerticalRatio) * scaleFactor / 2;
+
+                const centerX = canvas2D.width / 2;
+
+                // The top edge of the current tier's rectangle
+                const rectTopY = currentTierBottomY - tierScaledHeight;
+
+                // 1. Draw the bottom ellipse (base of the tier)
+                ctx2D.beginPath();
+                ctx2D.ellipse(centerX, currentTierBottomY, ellipseScaledRadiusX, ellipseScaledRadiusY, 0, 0, 2 * Math.PI);
+                ctx2D.fillStyle = '#ffffff';
+                ctx2D.fill();
+                ctx2D.strokeStyle = '#cccccc';
+                ctx2D.lineWidth = 1;
+                ctx2D.stroke();
+
+                // 2. Draw the main body of the rectangle (fill and draw only sides)
+                ctx2D.fillStyle = '#ffffff';
+                ctx2D.fillRect(centerX - ellipseScaledRadiusX, rectTopY, tierScaledWidth, tierScaledHeight);
+                
+                ctx2D.strokeStyle = '#cccccc';
+                ctx2D.lineWidth = 1;
+                ctx2D.beginPath();
+                // Left side line
+                ctx2D.moveTo(centerX - ellipseScaledRadiusX, rectTopY);
+                ctx2D.lineTo(centerX - ellipseScaledRadiusX, currentTierBottomY);
+                // Right side line
+                ctx2D.moveTo(centerX + ellipseScaledRadiusX, rectTopY);
+                ctx2D.lineTo(centerX + ellipseScaledRadiusX, currentTierBottomY);
+                ctx2D.stroke();
+
+                // 3. Draw the top ellipse (top of the tier)
+                ctx2D.beginPath();
+                ctx2D.ellipse(centerX, rectTopY, ellipseScaledRadiusX, ellipseScaledRadiusY, 0, 0, 2 * Math.PI);
+                ctx2D.fillStyle = '#ffffff';
+                ctx2D.fill();
+                ctx2D.strokeStyle = '#cccccc';
+                ctx2D.stroke();
+
+                // Add text labels for dimensions
+                ctx2D.fillStyle = '#333333';
+                ctx2D.font = '12px Inter, sans-serif';
+                
+                // Diameter label: centered above the top ellipse
+                ctx2D.textAlign = 'center';
+                ctx2D.fillText(`D: ${tier.diameter}cm`, centerX, rectTopY - ellipseScaledRadiusY - 5);
+
+                // Height label: to the right of the tier, vertically centered on the rectangle
+                ctx2D.textAlign = 'left';
+                ctx2D.fillText(`A: ${tier.height}cm`, centerX + ellipseScaledRadiusX + 5, rectTopY + tierScaledHeight / 2);
+                
+                // Update currentTierBottomY for the next tier (the top of the current tier becomes the base of the next)
+                currentTierBottomY = rectTopY;
+            }
+        }
+
+        function toggleView() {
+            is2DView = !is2DView;
+            renderCake();
+        }
+
+        // New function to handle printing
+        function printCanvas() {
+            let canvasToPrint;
+            if (is2DView) {
+                canvasToPrint = canvas2D;
+            } else {
+                canvasToPrint = canvas3D;
+            }
+
+            // Get the image data from the canvas
+            const imageData = canvasToPrint.toDataURL('image/png');
+
+            // Open a new window
+            const printWindow = window.open('', '_blank');
+            if (printWindow) {
+                printWindow.document.write(`
+                    <html>
+                    <head>
+                        <title>Imprimir Bolo</title>
+                        <style>
+                            body { margin: 0; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
+                            img { max-width: 100%; max-height: 90vh; display: block; margin: auto; }
+                            @media print {
+                                body { margin: 0; }
+                                img { max-width: 100%; max-height: none; width: auto; height: auto; }
+                            }
+                        </style>
+                    </head>
+                    <body>
+                        <img src="${imageData}" onload="window.print(); window.close();" />
+                    </body>
+                    </html>
+                `);
+                printWindow.document.close();
+            } else {
+                console.error('Não foi possível abrir a janela de impressão. Verifique se os pop-ups estão bloqueados.');
+            }
+        }
+
+        function onWindowResize() {
+            canvas3D.width = canvasContainer.clientWidth;
+            canvas3D.height = canvasContainer.clientHeight;
+            canvas2D.width = canvasContainer.clientWidth;
+            canvas2D.height = canvasContainer.clientHeight;
+
+            camera.aspect = canvasContainer.clientWidth / canvasContainer.clientHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(canvasContainer.clientWidth, canvasContainer.clientHeight);
+            renderCake();
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            if (!is2DView) {
+                controls.update();
+                renderer.render(scene, camera);
+            }
+        }
+    </script>
+</body>
+</html>
